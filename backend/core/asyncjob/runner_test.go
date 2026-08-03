@@ -140,7 +140,7 @@ func TestRunnerRetriesFailedHandlerWhenAttemptsRemain(t *testing.T) {
 
 func TestRecoverStaleJobsRestoresPendingAndFailsExhausted(t *testing.T) {
 	db := newTestDB(t)
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	expired := now.Add(-time.Minute)
 
 	retryJob := orm.AsyncJob{

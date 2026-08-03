@@ -78,6 +78,16 @@ func openTestPostgres(t testing.TB) *DB {
 		t.Fatalf("connect postgres: %v", err)
 	}
 
+	sqlDB, err := db.DB.DB()
+	if err != nil {
+		t.Fatalf("get sql db: %v", err)
+	}
+	// Cap per-test pool usage and return connections once the test ends.
+	// Without Close(), every test leaks idle connections against the shared
+	// CI PostgreSQL service and exhausts max_connections (SQLSTATE 53300).
+	sqlDB.SetMaxOpenConns(4)
+	sqlDB.SetMaxIdleConns(1)
+
 	if err := db.Exec("CREATE SCHEMA IF NOT EXISTS " + quoteIdent(schema)).Error; err != nil {
 		t.Fatalf("create schema %q: %v", schema, err)
 	}
@@ -86,6 +96,7 @@ func openTestPostgres(t testing.TB) *DB {
 		if err := db.Exec("DROP SCHEMA IF EXISTS " + quoteIdent(schema) + " CASCADE").Error; err != nil {
 			t.Logf("cleanup: drop schema %q: %v", schema, err)
 		}
+		_ = sqlDB.Close()
 	})
 
 	return db
