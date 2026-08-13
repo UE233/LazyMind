@@ -26,7 +26,6 @@ import (
 	"lazymind/core/log"
 	"lazymind/core/migrate"
 	"lazymind/core/modelprovider"
-	"lazymind/core/plugin"
 	"lazymind/core/resourceupdate"
 	"lazymind/core/scheduler"
 	"lazymind/core/state"
@@ -242,7 +241,6 @@ func main() {
 	}
 	evalset.RegisterAsyncJobs()
 	knowledge_market.RegisterAsyncJobs()
-	plugin.RegisterPluginDraftGenerateJob()
 	workflow.RegisterWorkflowDraftGenerateJob()
 	workflowHosts := workflowexecutor.DefaultHostRegistry
 	workflowHosts.RegisterHost("lazymind", workflowexecutor.HostRegistration{
