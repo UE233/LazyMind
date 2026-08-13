@@ -3,13 +3,87 @@ package modelconfig
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 
+	"lazymind/core/common"
 	"lazymind/core/modelprovider"
 )
+
+const cloudToolTokenTimeout = 5 * time.Second
+
+var cloudToolProviders = []string{"feishu", "googledrive", "notion"}
+
+type cloudConnectionList struct {
+	Data struct {
+		Items []struct {
+			ConnectionID string `json:"connection_id"`
+		} `json:"items"`
+	} `json:"data"`
+}
+
+type cloudTokenResponse struct {
+	Data struct {
+		AccessToken string `json:"access_token"`
+	} `json:"data"`
+}
+
+// LoadCloudToolConfig loads current user-scoped cloud credentials at execution time.
+func LoadCloudToolConfig(ctx context.Context, userID string) (map[string]any, error) {
+	toolConfig := map[string]any{}
+	for _, provider := range cloudToolProviders {
+		tokens, err := LoadCloudProviderTokens(ctx, provider, userID)
+		if err != nil {
+			return nil, err
+		}
+		if len(tokens) == 1 {
+			toolConfig[provider] = tokens[0]
+		} else if len(tokens) > 1 {
+			toolConfig[provider] = tokens
+		}
+	}
+	return toolConfig, nil
+}
+
+func LoadCloudProviderTokens(ctx context.Context, provider, userID string) ([]string, error) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	userID = strings.TrimSpace(userID)
+	if provider == "" || userID == "" {
+		return nil, nil
+	}
+	headers := map[string]string{}
+	if token := strings.TrimSpace(os.Getenv("LAZYMIND_AUTH_SERVICE_INTERNAL_TOKEN")); token != "" {
+		headers["X-LazyMind-Internal-Token"] = token
+	}
+	listURL := fmt.Sprintf("%s/v1/cloud/connections/internal/chat-enabled?provider=%s&owner_user_id=%s",
+		common.AuthServiceBaseURL(), url.QueryEscape(provider), url.QueryEscape(userID))
+	var connections cloudConnectionList
+	if err := common.ApiGet(ctx, listURL, headers, &connections, cloudToolTokenTimeout); err != nil {
+		return nil, fmt.Errorf("list chat-enabled %s connections: %w", provider, err)
+	}
+	tokens := make([]string, 0, len(connections.Data.Items))
+	for _, item := range connections.Data.Items {
+		connectionID := strings.TrimSpace(item.ConnectionID)
+		if connectionID == "" {
+			continue
+		}
+		tokenURL := fmt.Sprintf("%s/v1/cloud/connections/%s/token?user_id=%s",
+			common.AuthServiceBaseURL(), url.PathEscape(connectionID), url.QueryEscape(userID))
+		var response cloudTokenResponse
+		if err := common.ApiGet(ctx, tokenURL, headers, &response, cloudToolTokenTimeout); err != nil {
+			continue
+		}
+		if token := strings.TrimSpace(response.Data.AccessToken); token != "" {
+			tokens = append(tokens, token)
+		}
+	}
+	return tokens, nil
+}
 
 type SelectedRuntimeModel struct {
 	ModelType        string
@@ -161,6 +235,63 @@ func LoadOCRConfig(ctx context.Context, db *gorm.DB, userID string) (map[string]
 		config["ocr_auth"] = map[string]any{ocrType: authValue}
 	}
 	return config, nil
+}
+
+// LoadSearchToolConfig returns the selected web-search credential in the
+// dynamic tool-auth shape consumed by the algorithm service. Workflow attempts
+// use this alongside LoadLLMConfig because their durable/public Attempt context
+// intentionally does not persist Host-private credentials.
+func LoadSearchToolConfig(ctx context.Context, db *gorm.DB, userID string) (map[string]any, error) {
+	row, err := loadSelectedProviderConfig(ctx, db, strings.TrimSpace(userID), "search", false)
+	if err != nil {
+		return nil, err
+	}
+	if row == nil {
+		row, err = loadSelectedProviderConfig(ctx, db, "", "search", true)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if row == nil {
+		return nil, nil
+	}
+	toolName := normalizeSearchToolName(row.ProviderName)
+	if toolName == "" {
+		return nil, nil
+	}
+	keys := splitOCRAuthKeys(row.APIKey)
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	var value any = keys[0]
+	if len(keys) > 1 {
+		value = keys
+	}
+	return map[string]any{toolName: value}, nil
+}
+
+func normalizeSearchToolName(providerName string) string {
+	normalized := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			return r
+		}
+		if r >= 'A' && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return -1
+	}, providerName)
+	switch normalized {
+	case "google", "googlesearch", "googlecustomsearch":
+		return "google"
+	case "bocha", "bochasearch":
+		return "bocha"
+	case "bing", "bingsearch":
+		return "bing"
+	case "tavily":
+		return "tavily"
+	default:
+		return ""
+	}
 }
 
 func normalizeOCRAuthValue(raw string) any {
